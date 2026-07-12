@@ -3,6 +3,11 @@ from typing import List, Dict, Any, Optional, cast
 from sqlalchemy.orm import Session
 import models
 
+import logging
+import time
+
+logger = logging.getLogger("uvicorn.error")
+
 class BacktrackingScheduler:
     def __init__(self, db: Session, session_id: int):
         self.db = db
@@ -81,27 +86,29 @@ class BacktrackingScheduler:
                 return False
                 
             # 3. Перерва в 1 день для бакалаврів
-            if group_level == "bachelor" and a_exam.group_id == exam.group_id:
-                days_between = abs((a_slot["date"] - slot["date"]).days)
-                if days_between <= 1:
-                    return False
+            #if group_level == "bachelor" and a_exam.group_id == exam.group_id:
+            #    days_between = abs((a_slot["date"] - slot["date"]).days)
+            #    if days_between <= 1:
+            #        return False
                     
         if group_level == "master" and slot["week"] != 3:
             return False
-        if group_level == "bachelor" and slot["week"] == 3:
-            return False
+        #if group_level == "bachelor" and slot["week"] == 3:
+        #   return False
 
         return True
 
     def calculate_soft_score(self, exam: models.Exam, slot: dict, room: models.Room, current_schedule: list) -> float:
-        #Обчислює оцінку доцільності призначення (чим вище score, тим краще)
+        # Початковий бал (базовий нуль, можемо йти в мінус через штрафи)
         score = 0.0
         mode = self.optimization_mode
+        group_level = str(exam.group.level)
         
+        # 1. Відповідність комп'ютерних дисциплін лабам
         if bool(exam.subject.requires_computer) and bool(room.is_computer_lab):
             score += 10.0
             
-        # Тепер тут звичайне порівняння рядків, Pylance абсолютно спокійний
+        # 2. Твої режими оптимізації щільності
         if mode == "teacher_density":
             for assigned in current_schedule:
                 if assigned["exam"].teacher_id == exam.teacher_id and assigned["slot"]["date"] == slot["date"]:
@@ -111,19 +118,88 @@ class BacktrackingScheduler:
             for assigned in current_schedule:
                 if assigned["room"].id == room.id and assigned["slot"]["date"] == slot["date"]:
                     score += 50.0
-                    
+
+        # 🔥 3. М'ЯКЕ ОБМЕЖЕННЯ: Бажана перерва між іспитами для однієї групи
+        for assigned in current_schedule:
+            if assigned["exam"].group_id == exam.group_id:
+                days_between = abs((assigned["slot"]["date"] - slot["date"]).days)
+                
+                # Якщо іспити в один день (хоч hard_constraints це і так блокує, про всяк випадок)
+                if days_between == 0:
+                    score -= 500.0
+                
+                # Якщо іспити йдуть НАСТУПНОГО ДНЯ (перерва 0 повних днів)
+                elif days_between == 1:
+                    if group_level == "bachelor":
+                        score -= 150.0  # Великий штраф для бакалаврів
+                    else:
+                        score -= 50.0   # Менший штраф для магістрів
+
+                # Якщо іспити йдуть ЧЕРЕЗ ДЕНЬ (тобто між ними рівно 1 вільний день, наприклад 1-ше та 3-тє число)
+                # days_between == 2 означає: abs(3 - 1) = 2. Це ідеальний мінімум для бакалаврів.
+                elif days_between == 2:
+                    if group_level == "bachelor":
+                        score += 30.0   # Заохочуємо, якщо виконується умова "через день"
+                        
+                # Якщо перерва ще більша (наприклад, 3 або 4 дні) — теж добре
+                elif days_between > 2:
+                    score += 20.0
+
         return score
 
     def generate(self):
-        #Запуск алгоритму побудови розкладу
+        """Запуск алгоритму побудови розкладу з логуванням та лімітами"""
         current_schedule = []
-        sorted_exams = sorted(self.exams, key=lambda x: str(x.group.level))
         
-        if self._backtrack(0, sorted_exams, current_schedule):
+        # Ініціалізуємо лічильники для моніторингу
+        self.start_time = time.time()
+        self.iteration_count = 0
+        self.max_iterations = 200000  # Захисний ліміт (можна збільшити, якщо потрібно)
+        
+        logger.info(f"🚀 СТАРТ ГЕНЕРАЦІЇ. Іспитів до розподілу: {len(self.exams)}. Доступно слотів: {len(self.slots)}")
+        
+        # ОПТИМІЗАЦІЯ СОРТУВАННЯ (Евристика MRV / Most Constrained Variable):
+        # Замість простого level, сортуємо іспити за складністю:
+        # Спочатку пускаємо бакалаврів (у них сувора умова - перерва 1 день), 
+        # і всередині сортуємо за викладачем (хто частіше фігурує, той складніший).
+        teacher_counts = {}
+        for e in self.exams:
+            teacher_counts[e.teacher_id] = teacher_counts.get(e.teacher_id, 0) + 1
+            
+        sorted_exams = sorted(
+            self.exams, 
+            key=lambda x: (0 if str(x.group.level) == "bachelor" else 1, -teacher_counts.get(x.teacher_id, 0))
+        )
+        
+        # Запускаємо рекурсію
+        success = self._backtrack(0, sorted_exams, current_schedule)
+        
+        execution_time = time.time() - self.start_time
+        if success:
+            logger.info(f"🏁 УСПІХ! Розклад побудовано за {execution_time:.2f} сек. Ітерацій: {self.iteration_count}")
             return current_schedule
-        return None
+        else:
+            logger.error(f"❌ НЕВДАЧА. Зупинено за {execution_time:.2f} сек. Ітерацій: {self.iteration_count}")
+            return None
 
     def _backtrack(self, exam_idx: int, exams_list: list, current_schedule: list) -> bool:
+        self.iteration_count += 1
+        
+        # Логуємо кожні 10 000 ітерацій, щоб бачити, що процес іде і не "завис"
+        if self.iteration_count % 10000 == 0:
+            elapsed = time.time() - self.start_time
+            logger.info(
+                f"⏳ Прогрес: Ітерація {self.iteration_count} | "
+                f"Розподілено: {exam_idx}/{len(exams_list)} іспитів | "
+                f"Час: {elapsed:.1f}с"
+            )
+            
+        # Захисний ліміт від нескінченного циклу
+        if self.iteration_count > self.max_iterations:
+            logger.warning(f"⚠️ Досягнуто ліміт у {self.max_iterations} ітерацій. Запобігаємо зависанню сервера.")
+            return False
+
+        # Базова умова виходу з рекурсії
         if exam_idx >= len(exams_list):
             return True
             
@@ -136,6 +212,7 @@ class BacktrackingScheduler:
                     score = self.calculate_soft_score(current_exam, slot, room, current_schedule)
                     candidate_moves.append((score, slot, room))
                     
+        # Сортуємо кандидатів за спаданням м'яких балів (жадібний вибір)
         candidate_moves.sort(key=lambda x: x[0], reverse=True)
         
         for score, slot, room in candidate_moves:

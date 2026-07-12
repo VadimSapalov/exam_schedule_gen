@@ -258,6 +258,7 @@ def generate_schedule(session_id: int, payload: GenerateSchedulePayload, db: Ses
         db.commit()
 
     db.query(models.ScheduleDraft).filter(models.ScheduleDraft.session_id == session_id).delete()
+    db.query(models.ScheduleSlot).filter(models.ScheduleSlot.session_id == session_id).delete()
     db.commit()
 
     # Передаємо обраний режим (payload.mode) в архітектуру планувальника
