@@ -2,6 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 #Налаштування підключення
+#root:password змінити на свої, exam_sceduler це назва бази даних
 DATABASE_URL = "mysql+pymysql://root:@127.0.0.1:3306/exam_scheduler"
 
 engine = create_engine(
