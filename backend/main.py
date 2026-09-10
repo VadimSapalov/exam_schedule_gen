@@ -6,6 +6,7 @@ from io import BytesIO
 from typing import List, Optional
 
 from openpyxl.utils import get_column_letter
+from contextlib import asynccontextmanager
 
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
@@ -13,16 +14,36 @@ from fastapi.responses import StreamingResponse
 from scheduler import BacktrackingScheduler
 import models
 import schemas
-from database import engine, get_db
+from database import engine, get_db, SessionLocal
 from datetime import date
 
 # Автоматичне створення таблиць
 models.Base.metadata.create_all(bind=engine)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db = SessionLocal()
+    try:
+        existing_session = db.query(models.SessionEntity).first()
+        if not existing_session:
+            default_session = models.SessionEntity(
+                name="Літня екзаменаційна сесія 2026",
+                start_date=date(2026, 6, 1),
+                end_date=date(2026, 6, 21),
+                optimization_mode="teacher_density"
+            )
+            db.add(default_session)
+            db.commit()
+    finally:
+        db.close()
+    
+    yield
+
 app = FastAPI(
     title="Exam Scheduler API Core",
     description="Ядро інформаційної системи автоматизації розкладу сесій",
-    version="1.2"
+    version="1.2.1",
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -320,6 +341,15 @@ def get_schedule_drafts(session_id: int, db: Session = Depends(get_db)):
 
 # --- МАРШРУТИ ДЛЯ РОБОТИ З СЕСІЯМИ ---
 
+class SessionCreateSchema(BaseModel):
+    name: str
+    start_date: date
+    end_date: date
+    optimization_mode: Optional[str] = "teacher_density"
+
+class SessionUpdateMode(BaseModel):
+    optimization_mode: str
+
 @app.get("/api/v1/sessions/", tags=["Sessions"])
 def get_all_sessions(db: Session = Depends(get_db)):
     #Отримання списку всіх екзаменаційних сесій для перемикача на фронтенді
@@ -334,9 +364,50 @@ def get_all_sessions(db: Session = Depends(get_db)):
         sessions = [session1, session2]
     return sessions
 
-from pydantic import BaseModel
-class SessionUpdateMode(BaseModel):
-    optimization_mode: str
+@app.post("/api/v1/sessions/", tags=["Sessions"])
+def create_session(payload: SessionCreateSchema, db: Session = Depends(get_db)):
+    """Створення нової екзаменаційної сесії"""
+    if payload.start_date >= payload.end_date:
+        raise HTTPException(
+            status_code=400, 
+            detail="Дата початку сесії має бути раніше дати завершення"
+        )
+
+    new_session = models.SessionEntity(
+        name=payload.name,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        optimization_mode=payload.optimization_mode or "teacher_density"
+    )
+    
+    db.add(new_session)
+    db.commit()
+    db.refresh(new_session)
+    return new_session
+
+
+@app.put("/api/v1/sessions/{session_id}", tags=["Sessions"])
+def update_session(session_id: int, payload: SessionCreateSchema, db: Session = Depends(get_db)):
+    """Редагування існуючої сесії (назва, дати, режим)"""
+    session_entity = db.query(models.SessionEntity).filter(models.SessionEntity.id == session_id).first()
+    if not session_entity:
+        raise HTTPException(status_code=404, detail="Сесію не знайдено")
+
+    if payload.start_date >= payload.end_date:
+        raise HTTPException(
+            status_code=400, 
+            detail="Дата початку сесії має бути раніше дати завершення"
+        )
+
+    session_entity.name = payload.name #type: ignore
+    session_entity.start_date = payload.start_date #type: ignore
+    session_entity.end_date = payload.end_date #type: ignore
+    if payload.optimization_mode:
+        session_entity.optimization_mode = payload.optimization_mode #type: ignore
+
+    db.commit()
+    db.refresh(session_entity)
+    return session_entity
 
 @app.patch("/api/v1/sessions/{session_id}", tags=["Sessions"])
 def update_session_optimization_mode(session_id: int, payload: SessionUpdateMode, db: Session = Depends(get_db)):

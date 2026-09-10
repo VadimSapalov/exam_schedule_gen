@@ -1,0 +1,21 @@
+# Python / Virtual Environment (Бекенд)
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/.pytest_cache/
+
+# SQLite База даних
+backend/*.db
+backend/*.sqlite3
+
+# Node.js / React (Фронтенд)
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.nx/
+
+# Системні файли та IDE
+.vscode/
+.idea/
+.DS_Store
+*.log

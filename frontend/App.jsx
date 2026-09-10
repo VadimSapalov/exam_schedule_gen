@@ -2,12 +2,17 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import ImportExcel from './src/components/ImportExcel';
 import ScheduleGrid from './src/components/ScheduleGrid';
+import SessionModal from './src/components/SessionModal';
 
 export default function App() {
   // Стан для сесій
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState(1);
   const [optimizationMode, setOptimizationMode] = useState('teacher_density');
+
+  // Стан для модального вікна сесій
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [sessionToEdit, setSessionToEdit] = useState(null);
 
   // Дані розкладу та статус генерації
   const [schedule, setSchedule] = useState([]);
@@ -21,12 +26,15 @@ export default function App() {
       const res = await axios.get('http://localhost:8000/api/v1/sessions/');
       setSessions(res.data);
       if (res.data.length > 0) {
-        setSelectedSessionId(res.data[0].id);
-        setOptimizationMode(res.data[0].optimization_mode || 'backtracking');
+        // Якщо обрана сесія існує серед завантажених, залишаємо її, інакше обираємо першу
+        const currentExists = res.data.find(s => s.id === selectedSessionId);
+        const activeSession = currentExists || res.data[0];
+        
+        setSelectedSessionId(activeSession.id);
+        setOptimizationMode(activeSession.optimization_mode || 'teacher_density');
       }
     } catch (err) {
       console.error("Помилка завантаження сесій, відкат до моків", err);
-      //Резервний варіант
       const mockSessions = [
         { id: 1, name: "Літня екзаменаційна сесія 2026", optimization_mode: "teacher_density" },
         { id: 2, name: "Зимова екзаменаційна сесія 2026", optimization_mode: "room_density" }
@@ -47,7 +55,7 @@ export default function App() {
       setSchedule(res.data);
     } catch (err) {
       console.error("Помилка завантаження чернеток розкладу", err);
-      setSchedule([]); // очищуємо сітку у разі помилки або відсутності даних
+      setSchedule([]);
     }
   };
 
@@ -56,21 +64,22 @@ export default function App() {
     const newMode = e.target.value;
     setOptimizationMode(newMode);
     try {
-      // Оновлюємо режим для поточної сесії в БД
       await axios.patch(`http://localhost:8000/api/v1/sessions/${selectedSessionId}`, {
         optimization_mode: newMode
       });
+      // Оновлюємо локальний стан списку сесій
+      setSessions(prev => prev.map(s => s.id === selectedSessionId ? { ...s, optimization_mode: newMode } : s));
     } catch (err) {
-      console.log("Режим змінено локально (ендпоінт PATCH сесії необов'язковий)");
+      console.log("Режим змінено локально");
     }
   };
 
-  // 4. Запуск генератора з урахуванням обраної сесії та режиму
+  // 4. Запуск генератора
   const handleGenerate = async () => {
     setGenerating(true);
     try {
       const res = await axios.post(`http://localhost:8000/api/v1/schedule/generate/${selectedSessionId}`, {
-        mode: optimizationMode // передаємо обраний режим у тілі запиту, якщо алгоритм його приймає
+        mode: optimizationMode
       });
       alert(res.data.message || "Розклад успішно згенеровано за обраним алгоритмом!");
       loadSchedule(selectedSessionId);
@@ -81,14 +90,30 @@ export default function App() {
     }
   };
 
-  // Перше завантаження конфігурацій
+  // Хендлери для роботи з модальним вікном сесій
+  const handleOpenCreateModal = () => {
+    setSessionToEdit(null);
+    setIsModalOpen(true);
+  };
+
+  const handleOpenEditModal = () => {
+    const current = sessions.find(s => s.id === selectedSessionId);
+    if (current) {
+      setSessionToEdit(current);
+      setIsModalOpen(true);
+    }
+  };
+
   useEffect(() => {
     loadSessions();
   }, []);
 
-  // Перезавантажувати розклад щоразу, як змінюється обрана сесія
   useEffect(() => {
     loadSchedule(selectedSessionId);
+    const current = sessions.find(s => s.id === selectedSessionId);
+    if (current && current.optimization_mode) {
+      setOptimizationMode(current.optimization_mode);
+    }
   }, [selectedSessionId]);
 
   return (
@@ -100,7 +125,7 @@ export default function App() {
             <span className="font-extrabold text-slate-800 tracking-tight text-lg">Exam Scheduler Core v1.2</span>
           </div>
 
-          {/* Інтерактивний вибір сесії в шапці */}
+          {/* Інтерактивний вибір сесії в шапці з кнопками додавання/редагування */}
           <div className="flex items-center gap-2">
             <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Поточна сесія:</label>
             <select
@@ -112,6 +137,20 @@ export default function App() {
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
             </select>
+
+            <button
+              onClick={handleOpenEditModal}
+              className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
+            >
+              Редагувати
+            </button>
+
+            <button
+              onClick={handleOpenCreateModal}
+              className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
+            >
+              Створити
+            </button>
           </div>
         </div>
       </header>
@@ -121,15 +160,12 @@ export default function App() {
         
         {/* Конфігураційна панель дій */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          
-          {/* Блок 1: Динамічний Імпорт */}
           <ImportExcel sessionId={selectedSessionId} onImportSuccess={() => loadSchedule(selectedSessionId)} />
           
-          {/* Блок 2: Вибір режиму оптимізації */}
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between">
             <div className="flex flex-col gap-1">
               <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Критерій оптимізації</span>
-              <p className="text-[11px] text-slate-400">Впливає на штрафні функції розподілу матриці</p>
+              <p className="text-[11px] text-slate-400">Впливає на штрафні функции розподілу матриці</p>
             </div>
             <div className="mt-2">
               <select
@@ -143,7 +179,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Блок 3: Керування генератором */}
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center">
             <div className="flex flex-col">
               <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Ядро розрахунку</span>
@@ -159,7 +194,6 @@ export default function App() {
               {generating ? 'Обчислення матриці...' : '⚡ Запустити'}
             </button>
           </div>
-
         </div>
 
         {/* Таблиця розкладу */}
@@ -167,20 +201,26 @@ export default function App() {
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-lg font-bold text-slate-800">Екзаменаційна сітка чернетки</h2>
             <div className="flex items-center gap-4">
-              {/* Кнопка експорту */}
               <button
                 onClick={() => window.location.href = `http://localhost:8000/api/v1/schedule/export/${selectedSessionId}`}
                 className="px-4 py-2 text-xs font-bold text-black bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow transition-all flex items-center gap-1"
               >
                 📥 Експорт в Excel
               </button>
-              <span className="text-xs text-slate-400 font-medium">ID сессії: {selectedSessionId}</span>
+              <span className="text-xs text-slate-400 font-medium">ID сесії: {selectedSessionId}</span>
             </div>
           </div>
           <ScheduleGrid scheduleDrafts={schedule} onRefresh={() => loadSchedule(selectedSessionId)} />
         </div>
-
       </main>
+
+      {/* Модальне вікно для створення / редагування сесії */}
+      <SessionModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        sessionToEdit={sessionToEdit}
+        onSuccess={loadSessions}
+      />
     </div>
   );
 }

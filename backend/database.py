@@ -2,13 +2,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 #Налаштування підключення
-#root:password змінити на свої, exam_sceduler це назва бази даних
-DATABASE_URL = "mysql+pymysql://root:@127.0.0.1:3306/exam_scheduler"
+SQLALCHEMY_DATABASE_URL = "sqlite:///./schedule.db"
 
 engine = create_engine(
-    DATABASE_URL, 
-    pool_pre_ping=True,  #Автоматично перевіряє життєздатність з'єднання перед запитом
-    echo=False
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={"check_same_thread": False}
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
