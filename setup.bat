@@ -8,12 +8,14 @@ echo [1/2] Налаштування Бекенду (Python)...
 cd backend
 python -m venv venv
 call venv\Scripts\activate
-pip install -r requirements.txt
+call pip install -r requirements.txt
 cd ..
 
 echo [2/2] Налаштування Фронтенду (React)...
 cd frontend
-npm install
+if exist node_modules rmdir /s /q node_modules
+if exist package-lock.json del /f /q package-lock.json
+call npm install --legacy-peer-deps
 cd ..
 
 echo.

@@ -2,8 +2,8 @@
 chcp 65001 > nul
 echo Запуск Exam Scheduler...
 
-:: 1. Запуск FastAPI бекенду в окремому вікні
-start "Exam Scheduler - Backend" cmd /k "cd backend && uvicorn main:app --reload"
+:: 1. Запуск FastAPI бекенду через venv в окремому вікні
+start "Exam Scheduler - Backend" cmd /k "cd backend && venv\Scripts\python.exe -m uvicorn main:app --reload"
 
 :: 2. Запуск React фронтенду в окремому вікні
 start "Exam Scheduler - Frontend" cmd /k "cd frontend && npm run dev"
